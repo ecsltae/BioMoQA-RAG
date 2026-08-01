@@ -66,6 +66,7 @@ class SIBILSRetriever:
         cache_dir: Optional[str] = "data/sibils_cache",
         cache_ttl: int = 604800,  # 7 days
         empty_cache_ttl: int = 900,  # 15 min for 0-result queries
+        enforce_taxon_phrase: bool = True,
     ):
         """
         Initialize SIBILS retriever.
@@ -84,6 +85,11 @@ class SIBILSRetriever:
             empty_cache_ttl: Shorter TTL for empty (0-result) responses so a
                              transient upstream zero self-heals instead of being
                              replayed for the full cache_ttl (default 15 min)
+            enforce_taxon_phrase: When the query parser recognises a multi-word
+                             organism name (a binomial such as "Anurida polaris"),
+                             require that name as an adjacent phrase in retrieval so
+                             the specific epithet alone cannot match a different
+                             organism (e.g. the stonefly "Arcynopteryx polaris").
         """
         self.api_url = api_url
         if collection is None:
@@ -94,6 +100,7 @@ class SIBILSRetriever:
         self.timeout = timeout
         self.use_query_parser = use_query_parser
         self.use_es_query = use_es_query and use_query_parser  # ES query requires parser
+        self.enforce_taxon_phrase = enforce_taxon_phrase
 
         # Initialize query parser if enabled (use first collection for ES query generation)
         if self.use_query_parser:
@@ -236,6 +243,76 @@ class SIBILSRetriever:
             }
         return q
 
+    # Fields in which a taxon name is required to appear as a phrase, per collection.
+    _TAXON_FIELDS = {
+        "medline": ["title", "abstract"],
+        "pmc":     ["title", "abstract"],
+        "plazi":   ["treatment_title", "text", "title"],
+    }
+
+    @staticmethod
+    def _extract_taxa(es_query: dict) -> list[tuple[str, str]]:
+        """
+        Find multi-word organism names the query parser recognised.
+
+        The parser tags taxa with an `annotations.all` term of the form
+        `ott|<id>|<Name>`. A name containing a space is a binomial (genus +
+        epithet); returning it lets retrieval require the whole name rather than
+        matching the epithet alone. Returns a list of (name, ott_term) pairs.
+        """
+        taxa: list[tuple[str, str]] = []
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                for key, val in obj.items():
+                    if key == "term" and isinstance(val, dict):
+                        ott = val.get("annotations.all", "")
+                        if isinstance(ott, str) and ott.startswith("ott|"):
+                            parts = ott.split("|", 2)
+                            if len(parts) == 3 and " " in parts[2].strip():
+                                taxa.append((parts[2].strip(), ott))
+                    else:
+                        walk(val)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item)
+
+        walk(es_query)
+        # dedup preserving order
+        seen, out = set(), []
+        for name, ott in taxa:
+            if name not in seen:
+                seen.add(name)
+                out.append((name, ott))
+        return out
+
+    def _with_taxon_phrase(self, es_query: dict, taxa: list[tuple[str, str]], collection: str) -> dict:
+        """
+        Return a copy of *es_query* that also requires each recognised binomial to
+        appear as an adjacent phrase (or carry the taxon annotation).
+
+        This is added as a filter, so it constrains WHICH documents match without
+        changing the relevance scoring produced by the parser. A document qualifies
+        if it contains the binomial as a phrase in the collection's text fields OR
+        is annotated with that exact taxon — high precision, without losing
+        annotation-based recall.
+        """
+        import copy
+        fields = self._TAXON_FIELDS.get(collection, ["title", "abstract"])
+        q = copy.deepcopy(es_query)
+        query = q.get("query")
+        if not (isinstance(query, dict) and "bool" in query):
+            query = {"bool": {"must": [query] if query else []}}
+            q["query"] = query
+        bool_q = query["bool"]
+        for name, ott in taxa:
+            should = [{"multi_match": {"query": name, "type": "phrase", "fields": fields}}]
+            if ott:
+                should.append({"term": {"annotations.all": ott}})
+            bool_q.setdefault("filter", []).append(
+                {"bool": {"should": should, "minimum_should_match": 1}})
+        return q
+
     def _parse_hits(self, data: dict, collection: str) -> List[Document]:
         """Extract Document objects from a SIBILS JSON response."""
         hits = data.get("elastic_output", {}).get("hits", {}).get("hits", [])
@@ -297,6 +374,12 @@ class SIBILSRetriever:
                 if collection == "medline":
                     # Exclude title-only citations (empty abstract) at the source.
                     es_query = self._with_abstract_filter(es_query)
+                if self.enforce_taxon_phrase:
+                    # Require a recognised binomial as a phrase so the specific
+                    # epithet alone cannot match a different organism.
+                    taxa = self._extract_taxa(parsed_query.es_query)
+                    if taxa:
+                        es_query = self._with_taxon_phrase(es_query, taxa, collection)
                 response = requests.post(
                     self.api_url,
                     params={"col": collection, "n": n},

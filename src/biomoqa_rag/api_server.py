@@ -273,6 +273,7 @@ def get_pipeline():
                 sibils_cache_dir=config.sibils.cache_dir,
                 sibils_cache_ttl=config.sibils.cache_ttl,
                 sibils_empty_cache_ttl=config.sibils.empty_cache_ttl,
+                sibils_enforce_taxon_phrase=config.sibils.enforce_taxon_phrase,
                 sibils_collections=config.sibils.collections,
             )
 

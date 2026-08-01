@@ -75,6 +75,7 @@ class RAGConfig:
     sibils_cache_dir: Optional[str] = "data/sibils_cache"
     sibils_cache_ttl: int = 604800  # 7 days
     sibils_empty_cache_ttl: int = 900  # 15 min for 0-result queries
+    sibils_enforce_taxon_phrase: bool = True  # require recognised binomials as a phrase
 
     # Performance
     enable_parallel: bool = True
@@ -148,6 +149,7 @@ class RAGPipeline:
             cache_dir=self.config.sibils_cache_dir,
             cache_ttl=self.config.sibils_cache_ttl,
             empty_cache_ttl=self.config.sibils_empty_cache_ttl,
+            enforce_taxon_phrase=self.config.sibils_enforce_taxon_phrase,
         )
 
         # ── SIBILS-only retriever (for extractive mode) ──────────────────
