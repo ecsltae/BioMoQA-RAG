@@ -74,7 +74,7 @@ class RAGConfig:
     # SIBILS disk cache
     sibils_cache_dir: Optional[str] = "data/sibils_cache"
     sibils_cache_ttl: int = 604800  # 7 days
-    sibils_empty_cache_ttl: int = 900  # 15 min for 0-result queries
+    sibils_empty_cache_ttl: int = 0  # never serve empty results from cache
     sibils_enforce_taxon_phrase: bool = True  # require recognised binomials as a phrase
 
     # Performance

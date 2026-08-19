@@ -49,7 +49,7 @@ class SibilsConfig(BaseModel):
     user_agent: str = "BioMoQA-RAG/1.0 (https://github.com/sibils/BioMoQA-RAG)"
     cache_dir: str = "data/sibils_cache"
     cache_ttl: int = 604800  # 7 days
-    empty_cache_ttl: int = 900  # 15 min for 0-result queries (avoids caching transient upstream zeros)
+    empty_cache_ttl: int = 0  # never serve empty results from cache (0-result responses are not cached)
     enforce_taxon_phrase: bool = True  # require recognised binomials as a phrase (avoids epithet-only matches)
 
 

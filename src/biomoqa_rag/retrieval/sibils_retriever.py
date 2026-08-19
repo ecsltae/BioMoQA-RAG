@@ -65,7 +65,7 @@ class SIBILSRetriever:
         use_es_query: bool = True,  # Use full Elasticsearch query with concept annotations
         cache_dir: Optional[str] = "data/sibils_cache",
         cache_ttl: int = 604800,  # 7 days
-        empty_cache_ttl: int = 900,  # 15 min for 0-result queries
+        empty_cache_ttl: int = 0,  # never serve empty (0-result) responses from cache
         enforce_taxon_phrase: bool = True,
     ):
         """
@@ -82,9 +82,10 @@ class SIBILSRetriever:
             use_es_query: Use Elasticsearch query (requires query parser)
             cache_dir: Directory for disk cache (None to disable)
             cache_ttl: Cache time-to-live in seconds (default 7 days)
-            empty_cache_ttl: Shorter TTL for empty (0-result) responses so a
-                             transient upstream zero self-heals instead of being
-                             replayed for the full cache_ttl (default 15 min)
+            empty_cache_ttl: TTL for reading legacy empty (0-result) entries left
+                             by older builds. Defaults to 0 so they are never
+                             served (they expire on the next read). New empty
+                             results are not written to the cache at all.
             enforce_taxon_phrase: When the query parser recognises a multi-word
                              organism name (a binomial such as "Anurida polaris"),
                              require that name as an adjacent phrase in retrieval so
@@ -134,8 +135,9 @@ class SIBILSRetriever:
                 entry = db.get(key)
             if entry:
                 docs = entry["docs"]
-                # Empty results expire quickly so a transient upstream zero
-                # self-heals; real results keep the full TTL.
+                # Empty results are never served from cache (empty_cache_ttl
+                # defaults to 0), so a legacy poisoned empty entry from an older
+                # build expires on the next read; real results keep the full TTL.
                 ttl = self._cache_ttl if docs else self._empty_cache_ttl
                 if time.time() - entry["ts"] < ttl:
                     return docs
@@ -145,6 +147,11 @@ class SIBILSRetriever:
 
     def _cache_set(self, question: str, collection: str, n: int, docs: List["Document"]) -> None:
         if not self._cache_path:
+            return
+        if not docs:
+            # Never cache an empty result: a transient upstream zero (parser blip,
+            # ES hiccup) would otherwise be replayed to every subsequent request
+            # for the same query. Real results are still cached for cache_ttl.
             return
         key = self._cache_key(question, collection, n)
         try:
